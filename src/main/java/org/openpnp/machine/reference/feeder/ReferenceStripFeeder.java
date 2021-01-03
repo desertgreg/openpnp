@@ -19,8 +19,6 @@
 
 package org.openpnp.machine.reference.feeder;
 
-
-
 import java.util.List;
 
 import javax.swing.Action;
@@ -46,7 +44,6 @@ import org.openpnp.vision.pipeline.CvStage;
 import org.simpleframework.xml.Attribute;
 import org.simpleframework.xml.Element;
 
-
 /**
  * Implementation of Feeder that indexes through a strip of cut tape. This is a specialization of
  * the tray feeder that knows specifics about tape so that vision capabilities can be added.
@@ -68,387 +65,400 @@ import org.simpleframework.xml.Element;
  * hole to part lateral is tape width / 2 - 0.5mm
  */
 public class ReferenceStripFeeder extends ReferenceFeeder {
-    public enum TapeType {
-        WhitePaper("White Paper"),
-        BlackPlastic("Black Plastic"),
-        ClearPlastic("Clear Plastic");
+	public enum TapeType {
+		WhitePaper("White Paper"), BlackPlastic("Black Plastic"), ClearPlastic("Clear Plastic");
 
-        private String name;
+		private String name;
 
-        TapeType(String name) {
-            this.name = name;
-        }
+		TapeType(String name) {
+			this.name = name;
+		}
 
-        public String toString() {
-            return name;
-        }
-    }
+		public String toString() {
+			return name;
+		}
+	}
 
-    @Element(required = false)
-    private Location referenceHoleLocation = new Location(LengthUnit.Millimeters);
+	@Element(required = false)
+	private Location referenceHoleLocation = new Location(LengthUnit.Millimeters);
 
-    @Element(required = false)
-    private Location lastHoleLocation = new Location(LengthUnit.Millimeters);
+	@Element(required = false)
+	private Location lastHoleLocation = new Location(LengthUnit.Millimeters);
 
-    @Element(required = false)
-    private Length partPitch = new Length(4, LengthUnit.Millimeters);
+	@Element(required = false)
+	private Length partPitch = new Length(4, LengthUnit.Millimeters);
 
-    @Element(required = false)
-    private Length tapeWidth = new Length(8, LengthUnit.Millimeters);
+	@Element(required = false)
+	private Length tapeWidth = new Length(8, LengthUnit.Millimeters);
 
-    @Attribute(required = false)
-    private TapeType tapeType = TapeType.WhitePaper;
+	@Attribute(required = false)
+	private TapeType tapeType = TapeType.WhitePaper;
 
-    @Attribute(required = false)
-    private boolean visionEnabled = true;
+	@Attribute(required = false)
+	private boolean visionEnabled = true;
 
-    @Element(required = false)
-    private CvPipeline pipeline = createDefaultPipeline();
+	@Element(required = false)
+	private CvPipeline pipeline = createDefaultPipeline();
 
-    @Attribute
-    private int feedCount = 0;
+	@Attribute
+	private int feedCount = 0;
 
-    private Length holeDiameter = new Length(1.5, LengthUnit.Millimeters);
+	@Attribute(required = false)
+	private int maxFeedCount = 0;
 
-    private Length holePitch = new Length(4, LengthUnit.Millimeters);
+	private Length holeDiameter = new Length(1.5, LengthUnit.Millimeters);
 
-    private Length referenceHoleToPartLinear = new Length(2, LengthUnit.Millimeters);
+	private Length holePitch = new Length(4, LengthUnit.Millimeters);
 
-    private Location visionLocation;
+	private Length referenceHoleToPartLinear = new Length(2, LengthUnit.Millimeters);
 
-    public Length getHoleDiameterMin() {
-        return getHoleDiameter().multiply(0.9);
-    }
+	private Location visionLocation;
 
-    public Length getHoleDiameterMax() {
-        return getHoleDiameter().multiply(1.1);
-    }
+	public Length getHoleDiameterMin() {
+		return getHoleDiameter().multiply(0.9);
+	}
 
-    public Length getHolePitchMin() {
-        return getHolePitch().multiply(0.9);
-    }
+	public Length getHoleDiameterMax() {
+		return getHoleDiameter().multiply(1.1);
+	}
 
-    public Length getHoleDistanceMin() {
-        return getTapeWidth().multiply(0.25);
-    }
+	public Length getHolePitchMin() {
+		return getHolePitch().multiply(0.9);
+	}
 
-    public Length getHoleDistanceMax() {
-        // 1.75mm = 1.5mm holes are 1mm from the edge of the tape (as per EIA-481)
-        Length tapeEdgeToFeedHoleCenter = new Length(1.75, LengthUnit.Millimeters);
-        // The distance from the centre of the component to the edge of the tape. Gives a bit of leeway for not
-        // clicking exactly in the centre of the component, but is close enough to eliminate most false-positives.
-        return tapeEdgeToFeedHoleCenter.add(getHoleToPartLateral());
-    }
+	public Length getHoleDistanceMin() {
+		return getTapeWidth().multiply(0.25);
+	}
 
-    public Length getHoleLineDistanceMax() {
-        return new Length(0.5, LengthUnit.Millimeters);
-    }
+	public Length getHoleDistanceMax() {
+		// 1.75mm = 1.5mm holes are 1mm from the edge of the tape (as per EIA-481)
+		Length tapeEdgeToFeedHoleCenter = new Length(1.75, LengthUnit.Millimeters);
+		// The distance from the centre of the component to the edge of the tape. Gives
+		// a bit of leeway for not
+		// clicking exactly in the centre of the component, but is close enough to
+		// eliminate most false-positives.
+		return tapeEdgeToFeedHoleCenter.add(getHoleToPartLateral());
+	}
 
-    @Override
-    public Location getPickLocation() throws Exception {
-        int feedCount = this.feedCount;
+	public Length getHoleLineDistanceMax() {
+		return new Length(0.5, LengthUnit.Millimeters);
+	}
 
-        /*
-         * As a special case, before the feeder has been fed we return the pick location
-         * as if the feeder had been fed. This keeps us from returning a pick location
-         * that is off the edge of the strip.
-         */
-        if (feedCount == 0) {
-            feedCount = 1;
-        }
-        // Find the location of the part linearly along the tape
-        Location[] lineLocations = getIdealLineLocations();
-        // 20160608 - ldpgh/lutz_dd
-        // partPichtAdjusted:double ... match prev. partPitch.getValue()
-        // partPitchAdjusted is the euclidian distance of ReferenceHole and NextHole and divided by
-        // the amount of part locations in between. This Part count is derived from the distance
-        // and the given partPitch in GUI and afterwards rounded to the next integer value.
-        // partPitch/partPitchAdjusted limitation
-        // It's the P1 value according to EIA-481-C, October 2003, pg. 9, 11, 13
-        // Accuracy variations as specified in the document are not taken into account!
-        double partPitchAdjusted = lineLocations[0].getLinearDistanceTo(lineLocations[1]);
-        double holeCount = (Math.round(partPitchAdjusted / partPitch.getValue()));
+	@Override
+	public Location getPickLocation() throws Exception {
+		int feedCount = this.feedCount;
 
-        // if the two points are at least 1 hole apart, we can compute the adjusted pitch. 
-        // otherwise use the un-adjusted holePitch (and avoid a divide by zero).  The second 
-        // case means the feeder is set up incorrectly but has been tested to behave in a 
-        // reasonable way, even if the two points are coincident
-        if (holeCount > 0) {
-        	partPitchAdjusted = partPitchAdjusted / (Math.round(partPitchAdjusted / partPitch.getValue()));
-        } else {
-        	partPitchAdjusted = holePitch.getValue();
-        }
-        	
-        Location l = Utils2D.getPointAlongLine(lineLocations[0], lineLocations[1],
-                new Length((feedCount - 1) * partPitchAdjusted, partPitch.getUnits()));
-        // Create the offsets that are required to go from a reference hole
-        // to the part in the tape
-        Length x = getHoleToPartLateral().convertToUnits(l.getUnits());
-        Length y = referenceHoleToPartLinear.convertToUnits(l.getUnits());
-        Point p = new Point(x.getValue(), y.getValue());
+		/*
+		 * As a special case, before the feeder has been fed we return the pick location
+		 * as if the feeder had been fed. This keeps us from returning a pick location
+		 * that is off the edge of the strip.
+		 */
+		if (feedCount == 0) {
+			feedCount = 1;
+		}
+		// Find the location of the part linearly along the tape
+		Location[] lineLocations = getIdealLineLocations();
+		// 20160608 - ldpgh/lutz_dd
+		// partPichtAdjusted:double ... match prev. partPitch.getValue()
+		// partPitchAdjusted is the euclidian distance of ReferenceHole and NextHole and
+		// divided by
+		// the amount of part locations in between. This Part count is derived from the
+		// distance
+		// and the given partPitch in GUI and afterwards rounded to the next integer
+		// value.
+		// partPitch/partPitchAdjusted limitation
+		// It's the P1 value according to EIA-481-C, October 2003, pg. 9, 11, 13
+		// Accuracy variations as specified in the document are not taken into account!
+		double partPitchAdjusted = lineLocations[0].getLinearDistanceTo(lineLocations[1]);
+		double holeCount = (Math.round(partPitchAdjusted / partPitch.getValue()));
+
+		// if the two points are at least 1 hole apart, we can compute the adjusted
+		// pitch.
+		// otherwise use the un-adjusted holePitch (and avoid a divide by zero). The
+		// second
+		// case means the feeder is set up incorrectly but has been tested to behave in
+		// a
+		// reasonable way, even if the two points are coincident
+		if (holeCount > 0) {
+			partPitchAdjusted = partPitchAdjusted / (Math.round(partPitchAdjusted / partPitch.getValue()));
+		} else {
+			partPitchAdjusted = holePitch.getValue();
+		}
+
+		Location l = Utils2D.getPointAlongLine(lineLocations[0], lineLocations[1],
+				new Length((feedCount - 1) * partPitchAdjusted, partPitch.getUnits()));
+		// Create the offsets that are required to go from a reference hole
+		// to the part in the tape
+		Length x = getHoleToPartLateral().convertToUnits(l.getUnits());
+		Length y = referenceHoleToPartLinear.convertToUnits(l.getUnits());
+		Point p = new Point(x.getValue(), y.getValue());
 
 		// Determine the angle that the tape is at
 		double angle = Utils2D.getAngleFromPoint(lineLocations[0], lineLocations[1]);
 		// Rotate the part offsets by the angle to move it into the right
-        // coordinate space
-        p = Utils2D.rotatePoint(p, angle);
-        // And add the offset to the location we calculated previously
-        l = l.add(new Location(l.getUnits(), p.x, p.y, 0, 0));
-        // Add in the angle of the tape plus the angle of the part in the tape
-        // so that the part is picked at the right angle
-        l = l.derive(null, null, null, angle + getLocation().getRotation());
+		// coordinate space
+		p = Utils2D.rotatePoint(p, angle);
+		// And add the offset to the location we calculated previously
+		l = l.add(new Location(l.getUnits(), p.x, p.y, 0, 0));
+		// Add in the angle of the tape plus the angle of the part in the tape
+		// so that the part is picked at the right angle
+		l = l.derive(null, null, null, angle + getLocation().getRotation());
 
-        return l;
-    }
+		return l;
+	}
 
-    public Location[] getIdealLineLocations() {
-        if (visionLocation == null) {
-            return new Location[] {referenceHoleLocation, lastHoleLocation};
-        }
-        double d1 = referenceHoleLocation.getLinearLengthTo(lastHoleLocation)
-                .convertToUnits(LengthUnit.Millimeters).getValue();
-        double d2 = referenceHoleLocation.getLinearLengthTo(visionLocation)
-                .convertToUnits(LengthUnit.Millimeters).getValue();
-        if (d2 > d1) {
-            return new Location[] {referenceHoleLocation, visionLocation};
-        }
-        else {
-            return new Location[] {referenceHoleLocation, lastHoleLocation};
-        }
-    }
+	public Location[] getIdealLineLocations() {
+		if (visionLocation == null) {
+			return new Location[] { referenceHoleLocation, lastHoleLocation };
+		}
+		double d1 = referenceHoleLocation.getLinearLengthTo(lastHoleLocation).convertToUnits(LengthUnit.Millimeters)
+				.getValue();
+		double d2 = referenceHoleLocation.getLinearLengthTo(visionLocation).convertToUnits(LengthUnit.Millimeters)
+				.getValue();
+		if (d2 > d1) {
+			return new Location[] { referenceHoleLocation, visionLocation };
+		} else {
+			return new Location[] { referenceHoleLocation, lastHoleLocation };
+		}
+	}
 
-    public void feed(Nozzle nozzle) throws Exception {
-        setFeedCount(getFeedCount() + 1);
+	public void feed(Nozzle nozzle) throws Exception {
+		setFeedCount(getFeedCount() + 1);
 
-        updateVisionOffsets(nozzle);
-    }
+		if ((maxFeedCount > 0) && (feedCount > maxFeedCount)) {
+			throw new Exception("Tried to feed part: " + part.getId() + "  Feeder " + name + " empty.");
+		}
 
-    private void updateVisionOffsets(Nozzle nozzle) throws Exception {
-        if (!visionEnabled) {
-            return;
-        }
-        // go to where we expect to find the next reference hole
-        Camera camera = nozzle.getHead().getDefaultCamera();
-        Location expectedLocation = null;
-        Location[] lineLocations = getIdealLineLocations();
+		updateVisionOffsets(nozzle);
+	}
 
-        if (partPitch.convertToUnits(LengthUnit.Millimeters).getValue() < 4) {
-            // For tapes with a part pitch < 4 we need to check each hole
-            // twice since there are two parts per reference hole.
-            // Note the use of holePitch here and partPitch in the
-            // alternate case below.
-            expectedLocation = Utils2D.getPointAlongLine(lineLocations[0], lineLocations[1],
-                    holePitch.multiply((feedCount - 1) / 2));
-        }
-        else {
-            // For tapes with a part pitch >= 4 there is always a reference
-            // hole 2mm from a part so we just multiply by the part pitch
-            // skipping over holes that are not reference holes.
-            expectedLocation = Utils2D.getPointAlongLine(lineLocations[0], lineLocations[1],
-                    partPitch.multiply(feedCount - 1));
-        }
-        MovableUtils.moveToLocationAtSafeZ(camera, expectedLocation);
-        // and look for the hole
-        Location actualLocation = findClosestHole(camera);
-        if (actualLocation == null) {
-            throw new Exception("Unable to locate reference hole. End of strip?");
-        }
-        // make sure it's not too far away
-        Length distance = actualLocation.getLinearLengthTo(expectedLocation)
-                .convertToUnits(LengthUnit.Millimeters);
-        if (distance.getValue() > 2) {
-            throw new Exception("Unable to locate reference hole. End of strip?");
-        }
-        visionLocation = actualLocation;
-    }
+	private void updateVisionOffsets(Nozzle nozzle) throws Exception {
+		if (!visionEnabled) {
+			return;
+		}
+		// go to where we expect to find the next reference hole
+		Camera camera = nozzle.getHead().getDefaultCamera();
+		Location expectedLocation = null;
+		Location[] lineLocations = getIdealLineLocations();
 
-    private Location findClosestHole(Camera camera) throws Exception {
-        try (CvPipeline pipeline = getPipeline()) {
-            Integer pxMinDistance = (int) VisionUtils.toPixels(getHolePitchMin(), camera);
-            Integer pxMinDiameter = (int) VisionUtils.toPixels(getHoleDiameterMin(), camera);
-            Integer pxMaxDiameter = (int) VisionUtils.toPixels(getHoleDiameterMax(), camera);
-    
-            // Process the pipeline to clean up the image and detect the tape holes
-            pipeline.setProperty("camera", camera);
-            pipeline.setProperty("feeder", this);
-            pipeline.setProperty("DetectFixedCirclesHough.minDistance", pxMinDistance);
-            pipeline.setProperty("DetectFixedCirclesHough.minDiameter", pxMinDiameter);
-            pipeline.setProperty("DetectFixedCirclesHough.maxDiameter", pxMaxDiameter);
-            pipeline.process();
-    
-            try {
-                MainFrame.get().getCameraViews().getCameraView(camera)
-                        .showFilteredImage(OpenCvUtils.toBufferedImage(pipeline.getWorkingImage()), 250);
-            }
-            catch (Exception e) {
-                // if we aren't running in the UI this will fail, and that's okay
-            }
-    
-            // Grab the results
-            Object result = null;
-            List<CvStage.Result.Circle> results = null;
-            try {
-                result = pipeline.getResult(VisionUtils.PIPELINE_RESULTS_NAME).model;            
-                results = (List<CvStage.Result.Circle>) result;
-            }
-            catch (ClassCastException e) {
-                throw new Exception("Unrecognized result type (should be Circles): " + result);
-            }
-            if (results.isEmpty()) {
-                throw new Exception("Feeder " + getName() + ": No tape holes found.");
-            }
-    
-            // Find the closest result
-            results.sort((a, b) -> {
-                Double da = VisionUtils.getPixelLocation(camera, a.x, a.y)
-                        .getLinearDistanceTo(camera.getLocation());
-                Double db = VisionUtils.getPixelLocation(camera, b.x, b.y)
-                        .getLinearDistanceTo(camera.getLocation());
-                return da.compareTo(db);
-            });
-    
-            CvStage.Result.Circle closestResult = results.get(0);
-            Location holeLocation = VisionUtils.getPixelLocation(camera, closestResult.x, closestResult.y);
-            return holeLocation;
-        }
-    }
+		if (partPitch.convertToUnits(LengthUnit.Millimeters).getValue() < 4) {
+			// For tapes with a part pitch < 4 we need to check each hole
+			// twice since there are two parts per reference hole.
+			// Note the use of holePitch here and partPitch in the
+			// alternate case below.
+			expectedLocation = Utils2D.getPointAlongLine(lineLocations[0], lineLocations[1],
+					holePitch.multiply((feedCount - 1) / 2));
+		} else {
+			// For tapes with a part pitch >= 4 there is always a reference
+			// hole 2mm from a part so we just multiply by the part pitch
+			// skipping over holes that are not reference holes.
+			expectedLocation = Utils2D.getPointAlongLine(lineLocations[0], lineLocations[1],
+					partPitch.multiply(feedCount - 1));
+		}
+		MovableUtils.moveToLocationAtSafeZ(camera, expectedLocation);
+		// and look for the hole
+		Location actualLocation = findClosestHole(camera);
+		if (actualLocation == null) {
+			throw new Exception("Unable to locate reference hole. End of strip?");
+		}
+		// make sure it's not too far away
+		Length distance = actualLocation.getLinearLengthTo(expectedLocation).convertToUnits(LengthUnit.Millimeters);
+		if (distance.getValue() > 2) {
+			throw new Exception("Unable to locate reference hole. End of strip?");
+		}
+		visionLocation = actualLocation;
+	}
 
-    public CvPipeline getPipeline() {
-        return pipeline;
-    }
+	private Location findClosestHole(Camera camera) throws Exception {
+		try (CvPipeline pipeline = getPipeline()) {
+			Integer pxMinDistance = (int) VisionUtils.toPixels(getHolePitchMin(), camera);
+			Integer pxMinDiameter = (int) VisionUtils.toPixels(getHoleDiameterMin(), camera);
+			Integer pxMaxDiameter = (int) VisionUtils.toPixels(getHoleDiameterMax(), camera);
 
-    public void resetPipeline() {
-        pipeline = createDefaultPipeline();
-    }
+			// Process the pipeline to clean up the image and detect the tape holes
+			pipeline.setProperty("camera", camera);
+			pipeline.setProperty("feeder", this);
+			pipeline.setProperty("DetectFixedCirclesHough.minDistance", pxMinDistance);
+			pipeline.setProperty("DetectFixedCirclesHough.minDiameter", pxMinDiameter);
+			pipeline.setProperty("DetectFixedCirclesHough.maxDiameter", pxMaxDiameter);
+			pipeline.process();
 
-    private Length getHoleToPartLateral() {
-        Length tapeWidth = this.tapeWidth.convertToUnits(LengthUnit.Millimeters);
-        return new Length(tapeWidth.getValue() / 2 - 0.5, LengthUnit.Millimeters);
-    }
+			try {
+				MainFrame.get().getCameraViews().getCameraView(camera)
+						.showFilteredImage(OpenCvUtils.toBufferedImage(pipeline.getWorkingImage()), 250);
+			} catch (Exception e) {
+				// if we aren't running in the UI this will fail, and that's okay
+			}
 
-    public TapeType getTapeType() {
-        return tapeType;
-    }
+			// Grab the results
+			Object result = null;
+			List<CvStage.Result.Circle> results = null;
+			try {
+				result = pipeline.getResult(VisionUtils.PIPELINE_RESULTS_NAME).model;
+				results = (List<CvStage.Result.Circle>) result;
+			} catch (ClassCastException e) {
+				throw new Exception("Unrecognized result type (should be Circles): " + result);
+			}
+			if (results.isEmpty()) {
+				throw new Exception("Feeder " + getName() + ": No tape holes found.");
+			}
 
-    public void setTapeType(TapeType tapeType) {
-        this.tapeType = tapeType;
-    }
+			// Find the closest result
+			results.sort((a, b) -> {
+				Double da = VisionUtils.getPixelLocation(camera, a.x, a.y).getLinearDistanceTo(camera.getLocation());
+				Double db = VisionUtils.getPixelLocation(camera, b.x, b.y).getLinearDistanceTo(camera.getLocation());
+				return da.compareTo(db);
+			});
 
-    public Location getReferenceHoleLocation() {
-        return referenceHoleLocation;
-    }
+			CvStage.Result.Circle closestResult = results.get(0);
+			Location holeLocation = VisionUtils.getPixelLocation(camera, closestResult.x, closestResult.y);
+			return holeLocation;
+		}
+	}
 
-    public void setReferenceHoleLocation(Location referenceHoleLocation) {
-        Object oldValue = this.referenceHoleLocation;
-        this.referenceHoleLocation = referenceHoleLocation;
-        visionLocation = null;
-        firePropertyChange("referenceHoleLocation", oldValue, referenceHoleLocation);
-    }
+	public CvPipeline getPipeline() {
+		return pipeline;
+	}
 
-    public Location getLastHoleLocation() {
-        return lastHoleLocation;
-    }
+	public void resetPipeline() {
+		pipeline = createDefaultPipeline();
+	}
 
-    public void setLastHoleLocation(Location lastHoleLocation) {
-        Object oldValue = this.lastHoleLocation;
-        this.lastHoleLocation = lastHoleLocation;
-        visionLocation = null;
-        firePropertyChange("lastHoleLocation", oldValue, lastHoleLocation);
-    }
+	private Length getHoleToPartLateral() {
+		Length tapeWidth = this.tapeWidth.convertToUnits(LengthUnit.Millimeters);
+		return new Length(tapeWidth.getValue() / 2 - 0.5, LengthUnit.Millimeters);
+	}
 
-    public Length getHoleDiameter() {
-        return holeDiameter;
-    }
+	public TapeType getTapeType() {
+		return tapeType;
+	}
 
-    public void setHoleDiameter(Length holeDiameter) {
-        this.holeDiameter = holeDiameter;
-    }
+	public void setTapeType(TapeType tapeType) {
+		this.tapeType = tapeType;
+	}
 
-    public Length getHolePitch() {
-        return holePitch;
-    }
+	public Location getReferenceHoleLocation() {
+		return referenceHoleLocation;
+	}
 
-    public void setHolePitch(Length holePitch) {
-        this.holePitch = holePitch;
-    }
+	public void setReferenceHoleLocation(Location referenceHoleLocation) {
+		Object oldValue = this.referenceHoleLocation;
+		this.referenceHoleLocation = referenceHoleLocation;
+		visionLocation = null;
+		firePropertyChange("referenceHoleLocation", oldValue, referenceHoleLocation);
+	}
 
-    public Length getPartPitch() {
-        return partPitch;
-    }
+	public Location getLastHoleLocation() {
+		return lastHoleLocation;
+	}
 
-    public void setPartPitch(Length partPitch) {
-        this.partPitch = partPitch;
-    }
+	public void setLastHoleLocation(Location lastHoleLocation) {
+		Object oldValue = this.lastHoleLocation;
+		this.lastHoleLocation = lastHoleLocation;
+		visionLocation = null;
+		firePropertyChange("lastHoleLocation", oldValue, lastHoleLocation);
+	}
 
-    public Length getTapeWidth() {
-        return tapeWidth;
-    }
+	public Length getHoleDiameter() {
+		return holeDiameter;
+	}
 
-    public void setTapeWidth(Length tapeWidth) {
-        this.tapeWidth = tapeWidth;
-    }
+	public void setHoleDiameter(Length holeDiameter) {
+		this.holeDiameter = holeDiameter;
+	}
 
-    public int getFeedCount() {
-        return feedCount;
-    }
+	public Length getHolePitch() {
+		return holePitch;
+	}
 
-    public void setFeedCount(int feedCount) {
-        int oldValue = this.feedCount;
-        this.feedCount = feedCount;
-        firePropertyChange("feedCount", oldValue, feedCount);
-    }
+	public void setHolePitch(Length holePitch) {
+		this.holePitch = holePitch;
+	}
 
-    public Length getReferenceHoleToPartLinear() {
-        return referenceHoleToPartLinear;
-    }
+	public Length getPartPitch() {
+		return partPitch;
+	}
 
-    public void setReferenceHoleToPartLinear(Length referenceHoleToPartLinear) {
-        this.referenceHoleToPartLinear = referenceHoleToPartLinear;
-    }
+	public void setPartPitch(Length partPitch) {
+		this.partPitch = partPitch;
+	}
 
-    public boolean isVisionEnabled() {
-        return visionEnabled;
-    }
+	public Length getTapeWidth() {
+		return tapeWidth;
+	}
 
-    public void setVisionEnabled(boolean visionEnabled) {
-        this.visionEnabled = visionEnabled;
-    }
+	public void setTapeWidth(Length tapeWidth) {
+		this.tapeWidth = tapeWidth;
+	}
 
-    @Override
-    public String toString() {
-        return getName();
-    }
+	public int getFeedCount() {
+		return feedCount;
+	}
 
-    @Override
-    public Wizard getConfigurationWizard() {
-        return new ReferenceStripFeederConfigurationWizard(this);
-    }
+	public void setFeedCount(int feedCount) {
+		int oldValue = this.feedCount;
+		this.feedCount = feedCount;
+		firePropertyChange("feedCount", oldValue, feedCount);
+	}
 
-    @Override
-    public String getPropertySheetHolderTitle() {
-        return getClass().getSimpleName() + " " + getName();
-    }
+	public int getMaxFeedCount() {
+		return maxFeedCount;
+	}
 
-    @Override
-    public PropertySheetHolder[] getChildPropertySheetHolders() {
-        return null;
-    }
+	public void setMaxFeedCount(int count) {
+		maxFeedCount = count;
+	}
 
-    @Override
-    public Action[] getPropertySheetHolderActions() {
-        return null;
-    }
+	public Length getReferenceHoleToPartLinear() {
+		return referenceHoleToPartLinear;
+	}
 
-    private static CvPipeline createDefaultPipeline() {
-        try {
-            String xml = IOUtils.toString(ReferenceStripFeeder.class
-                    .getResource("ReferenceStripFeeder-DefaultPipeline.xml"));
-            return new CvPipeline(xml);
-        }
-        catch (Exception e) {
-            throw new Error(e);
-        }
-    }
+	public void setReferenceHoleToPartLinear(Length referenceHoleToPartLinear) {
+		this.referenceHoleToPartLinear = referenceHoleToPartLinear;
+	}
+
+	public boolean isVisionEnabled() {
+		return visionEnabled;
+	}
+
+	public void setVisionEnabled(boolean visionEnabled) {
+		this.visionEnabled = visionEnabled;
+	}
+
+	@Override
+	public String toString() {
+		return getName();
+	}
+
+	@Override
+	public Wizard getConfigurationWizard() {
+		return new ReferenceStripFeederConfigurationWizard(this);
+	}
+
+	@Override
+	public String getPropertySheetHolderTitle() {
+		return getClass().getSimpleName() + " " + getName();
+	}
+
+	@Override
+	public PropertySheetHolder[] getChildPropertySheetHolders() {
+		return null;
+	}
+
+	@Override
+	public Action[] getPropertySheetHolderActions() {
+		return null;
+	}
+
+	private static CvPipeline createDefaultPipeline() {
+		try {
+			String xml = IOUtils
+					.toString(ReferenceStripFeeder.class.getResource("ReferenceStripFeeder-DefaultPipeline.xml"));
+			return new CvPipeline(xml);
+		} catch (Exception e) {
+			throw new Error(e);
+		}
+	}
 }
 
 // this code left here in case we want to use it in the future. it is for
