@@ -223,11 +223,19 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
     public void feed(Nozzle nozzle) throws Exception {
         setFeedCount(getFeedCount() + 1);
 
+        // other code automatically disables when the feeder runs out but this can still happen 
+        // if the user re-enables and feeds again 
         if ((maxFeedCount > 0) && (feedCount > maxFeedCount)) {
 			throw new Exception("Tried to feed part: " + part.getId() + "  Feeder " + name + " empty.");
 		}
 
         updateVisionOffsets(nozzle);
+
+        // disable this feeder when it runs out of parts
+        if ((maxFeedCount > 0) && (feedCount >= maxFeedCount))
+        {
+        	enabled = false;
+        }
     }
 
     private void updateVisionOffsets(Nozzle nozzle) throws Exception {
